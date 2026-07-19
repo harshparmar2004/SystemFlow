@@ -3,12 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { HackathonForm } from './components/HackathonForm';
+import { Scanner } from './components/Scanner';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState(1);
+  const [isScanner, setIsScanner] = useState(false);
+
+  useEffect(() => {
+    if (window.location.pathname === '/scanner' || window.location.search.includes('scanner=true')) {
+      setIsScanner(true);
+    }
+  }, []);
+
+  if (isScanner) {
+    return <Scanner />;
+  }
 
   return (
     <div className="min-h-screen bg-sand-100 flex">
