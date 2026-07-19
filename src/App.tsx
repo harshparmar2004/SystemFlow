@@ -32,7 +32,7 @@ export default function App() {
             setUserRole(userDoc.data() as UserRole);
           } else {
             // Default role logic
-            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com';
+            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com' || currentUser.email === 'harshparmar686630@gmaiil.com';
             setUserRole({ 
               uid: currentUser.uid, 
               email: currentUser.email || '', 
@@ -73,15 +73,15 @@ export default function App() {
     return <AuthScreen />;
   }
 
-  // Enforce role-based routing if they try to access admin directly
-  if (route === 'admin' && userRole?.role !== 'admin' && userRole?.role !== 'volunteer') {
-    // If not admin/volunteer, force them to home
-    setRoute('home');
-  } else if (route === 'home' && userRole?.role === 'admin') {
-    // If admin and on home, maybe route to admin directly, or let them stay on home?
-    // Let's redirect them to admin since they are an admin.
-    setRoute('admin');
-  }
+  useEffect(() => {
+    if (userRole) {
+      if (route === 'admin' && userRole.role !== 'admin' && userRole.role !== 'volunteer') {
+        setRoute('home');
+      } else if (route === 'home' && userRole.role === 'admin') {
+        setRoute('admin');
+      }
+    }
+  }, [userRole, route]);
 
   if (route === 'scanner') {
     return <Scanner />;

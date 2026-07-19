@@ -23,7 +23,7 @@ export function AuthScreen({ onSignIn }: { onSignIn?: () => void }) {
       
       if (!userDoc.exists()) {
         // Define role
-        const role = user.email === 'harshparmar686630@gmail.com' ? 'admin' : 'student';
+        const role = (user.email === 'harshparmar686630@gmail.com' || user.email === 'harshparmar686630@gmaiil.com') ? 'admin' : 'student';
         
         // Create user document
         await setDoc(userDocRef, {
@@ -37,7 +37,13 @@ export function AuthScreen({ onSignIn }: { onSignIn?: () => void }) {
         onSignIn();
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('Google Sign-In is not enabled. Please go to your Firebase Console -> Authentication -> Sign-in methods -> Enable Google Sign-In.');
+      } else if (err.message && err.message.includes('api-key-not-valid')) {
+        setError('Firebase API Key is invalid or missing.');
+      } else {
+        setError(err.message || 'Authentication failed');
+      }
     } finally {
       setIsLoading(false);
     }

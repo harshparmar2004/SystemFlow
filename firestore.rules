@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow users to read and write their own profile
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Admin access (if we want to allow admins full access, we could check the user document, but for now let's just do a basic allow for authorized)
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

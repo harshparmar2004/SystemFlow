@@ -28,7 +28,7 @@ export function AdminDashboard() {
               setCurrentTab('checkins');
             }
           } else {
-            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com';
+            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com' || currentUser.email === 'harshparmar686630@gmaiil.com';
             setUserRole({ uid: currentUser.uid, email: currentUser.email || '', role: isHarshAdmin ? 'admin' : 'student' });
           }
         } catch (err) {
