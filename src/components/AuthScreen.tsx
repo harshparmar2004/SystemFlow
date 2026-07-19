@@ -37,7 +37,11 @@ export function AuthScreen({ onSignIn }: { onSignIn?: () => void }) {
         onSignIn();
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      if (err.message && err.message.includes('api-key-not-valid')) {
+        setError('Firebase API Key is invalid or missing. Please add your Firebase configuration to the environment variables via the AI Studio Settings menu.');
+      } else {
+        setError(err.message || 'Authentication failed');
+      }
     } finally {
       setIsLoading(false);
     }
