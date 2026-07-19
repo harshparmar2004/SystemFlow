@@ -27,3 +27,11 @@ export interface Team {
   qrPayload?: string;
   qrSignatureExp?: any;
 }
+
+export interface UserRole {
+  uid: string;
+  email: string;
+  role: "admin" | "volunteer";
+  assignedGateId?: string;
+  assignedEventId?: string;
+}

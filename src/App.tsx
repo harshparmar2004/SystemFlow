@@ -7,19 +7,27 @@ import React, { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { HackathonForm } from './components/HackathonForm';
 import { Scanner } from './components/Scanner';
+import { AdminDashboard } from './components/Admin/AdminDashboard';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState(1);
-  const [isScanner, setIsScanner] = useState(false);
+  const [route, setRoute] = useState('home');
 
   useEffect(() => {
-    if (window.location.pathname === '/scanner' || window.location.search.includes('scanner=true')) {
-      setIsScanner(true);
+    const path = window.location.pathname;
+    if (path === '/scanner' || window.location.search.includes('scanner=true')) {
+      setRoute('scanner');
+    } else if (path === '/admin' || window.location.search.includes('admin=true')) {
+      setRoute('admin');
     }
   }, []);
 
-  if (isScanner) {
+  if (route === 'scanner') {
     return <Scanner />;
+  }
+
+  if (route === 'admin') {
+    return <AdminDashboard />;
   }
 
   return (
