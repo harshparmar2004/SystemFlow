@@ -26,6 +26,10 @@ export interface Team {
   updatedAt?: any;
   qrPayload?: string;
   qrSignatureExp?: any;
+  teamCode?: string;
+  deliveryStatus?: 'pending' | 'delivered' | 'failed';
+  deliveredVia?: 'email' | 'whatsapp';
+  deliveredAt?: any;
 }
 
 export interface UserRole {

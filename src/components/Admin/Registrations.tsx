@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
+import { getFunctions as getFirebaseFunctions, httpsCallable as firebaseHttpsCallable } from 'firebase/functions';
+import { app, db } from '../../lib/firebase';
 import { Team } from '../../types';
-import { Search, Download, Filter } from 'lucide-react';
+import { Search, Download, Filter, RefreshCw, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 export function Registrations() {
@@ -10,6 +11,8 @@ export function Registrations() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [deliveryFilter, setDeliveryFilter] = useState('all');
+  const [resendingId, setResendingId] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'teams'), orderBy('createdAt', 'desc'));
@@ -24,14 +27,19 @@ export function Registrations() {
   const filteredTeams = teams.filter(t => {
     const matchesSearch = t.teamName.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    let matchesDelivery = true;
+    if (deliveryFilter === 'failed') matchesDelivery = t.deliveryStatus === 'failed';
+    else if (deliveryFilter === 'pending') matchesDelivery = t.deliveryStatus === 'pending';
+    else if (deliveryFilter === 'delivered') matchesDelivery = t.deliveryStatus === 'delivered';
+    
+    return matchesSearch && matchesStatus && matchesDelivery;
   });
 
   const exportCSV = () => {
     if (filteredTeams.length === 0) return;
 
     const headers = [
-      'Team ID', 'Team Name', 'Event ID', 'Status', 
+      'Team ID', 'Team Name', 'Team Code', 'Event ID', 'Status', 'Delivery Status',
       'Created At', 'Member 1 Name', 'Member 1 Email', 'Member 1 Phone', 'Member 1 College ID', 'Member 1 Role',
       'Member 2 Name', 'Member 2 Email', 'Member 2 Phone', 'Member 2 College ID', 'Member 2 Role',
       'Member 3 Name', 'Member 3 Email', 'Member 3 Phone', 'Member 3 College ID', 'Member 3 Role',
@@ -40,7 +48,7 @@ export function Registrations() {
 
     const rows = filteredTeams.map(t => {
       const date = t.createdAt ? new Date(t.createdAt.toMillis()).toLocaleString() : '';
-      const baseInfo = [t.teamId, t.teamName, t.eventId, t.status, date];
+      const baseInfo = [t.teamId, t.teamName, t.teamCode || '', t.eventId, t.status, t.deliveryStatus || '', date];
       
       const memberInfo = [];
       for (let i = 0; i < 4; i++) {
@@ -65,6 +73,20 @@ export function Registrations() {
     document.body.removeChild(link);
   };
 
+  const handleResend = async (teamId: string, channel: 'email' | 'whatsapp' = 'email') => {
+    try {
+      setResendingId(teamId);
+      const functions = getFirebaseFunctions(app);
+      const resendQr = firebaseHttpsCallable(functions, 'resendQr');
+      await resendQr({ teamId, channel });
+    } catch (err) {
+      console.error("Failed to resend QR:", err);
+      alert("Failed to queue resend request.");
+    } finally {
+      setResendingId(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     const styles: Record<string, string> = {
       pending: "bg-yellow-100 text-yellow-800",
@@ -77,6 +99,40 @@ export function Registrations() {
         {status.replace('_', ' ')}
       </span>
     );
+  };
+
+  const getDeliveryStatus = (team: Team) => {
+    if (!team.deliveryStatus && team.status !== 'verified' && team.status !== 'checked_in') {
+      return <span className="text-gray-400 text-xs">-</span>;
+    }
+
+    if (team.deliveryStatus === 'failed') {
+      return (
+        <div className="flex items-center gap-1.5 text-red-600">
+          <AlertCircle size={14} />
+          <span className="text-xs font-medium uppercase tracking-wider">Failed</span>
+        </div>
+      );
+    }
+    if (team.deliveryStatus === 'pending') {
+      return (
+        <div className="flex items-center gap-1.5 text-yellow-600">
+          <Clock size={14} />
+          <span className="text-xs font-medium uppercase tracking-wider">Pending</span>
+        </div>
+      );
+    }
+    if (team.deliveryStatus === 'delivered') {
+      return (
+        <div className="flex items-center gap-1.5 text-green-600">
+          <CheckCircle size={14} />
+          <span className="text-xs font-medium uppercase tracking-wider">
+            Sent ({team.deliveredVia || 'email'})
+          </span>
+        </div>
+      );
+    }
+    return <span className="text-gray-400 text-xs">Unknown</span>;
   };
 
   return (
@@ -104,19 +160,34 @@ export function Registrations() {
               className="w-full pl-10 pr-4 py-2 bg-sand-50 border border-border-muted rounded-md focus:outline-none focus:ring-2 focus:ring-burnt-orange/50 focus:border-burnt-orange transition-colors text-sm"
             />
           </div>
-          <div className="relative">
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full sm:w-48 pl-3 pr-8 py-2 bg-sand-50 border border-border-muted rounded-md focus:outline-none focus:ring-2 focus:ring-burnt-orange/50 focus:border-burnt-orange transition-colors text-sm appearance-none"
-            >
-              <option value="all">All Statuses</option>
-              <option value="pending">Pending</option>
-              <option value="otp_sent">OTP Sent</option>
-              <option value="verified">Verified</option>
-              <option value="checked_in">Checked In</option>
-            </select>
-            <Filter className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="relative">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full sm:w-40 pl-3 pr-8 py-2 bg-sand-50 border border-border-muted rounded-md focus:outline-none focus:ring-2 focus:ring-burnt-orange/50 focus:border-burnt-orange transition-colors text-sm appearance-none"
+              >
+                <option value="all">All Statuses</option>
+                <option value="pending">Pending</option>
+                <option value="otp_sent">OTP Sent</option>
+                <option value="verified">Verified</option>
+                <option value="checked_in">Checked In</option>
+              </select>
+              <Filter className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+            </div>
+            <div className="relative">
+              <select
+                value={deliveryFilter}
+                onChange={(e) => setDeliveryFilter(e.target.value)}
+                className="w-full sm:w-48 pl-3 pr-8 py-2 bg-sand-50 border border-border-muted rounded-md focus:outline-none focus:ring-2 focus:ring-burnt-orange/50 focus:border-burnt-orange transition-colors text-sm appearance-none"
+              >
+                <option value="all">All Deliveries</option>
+                <option value="failed">Failed Deliveries</option>
+                <option value="pending">Pending Deliveries</option>
+                <option value="delivered">Delivered Successfully</option>
+              </select>
+              <Filter className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+            </div>
           </div>
         </div>
 
@@ -124,11 +195,11 @@ export function Registrations() {
           <table className="w-full text-left text-sm text-gray-600">
             <thead className="text-xs text-gray-500 uppercase bg-sand-50 border-b border-border-muted sticky top-0">
               <tr>
-                <th className="px-6 py-3 font-medium">Team Name</th>
+                <th className="px-6 py-3 font-medium">Team Info</th>
                 <th className="px-6 py-3 font-medium">Event</th>
-                <th className="px-6 py-3 font-medium">Members</th>
                 <th className="px-6 py-3 font-medium">Status</th>
-                <th className="px-6 py-3 font-medium">Date</th>
+                <th className="px-6 py-3 font-medium">Delivery Status</th>
+                <th className="px-6 py-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -143,17 +214,31 @@ export function Registrations() {
               ) : (
                 filteredTeams.map((team) => (
                   <tr key={team.teamId} className="border-b border-border-muted last:border-0 hover:bg-sand-50/50">
-                    <td className="px-6 py-4 font-medium text-gray-900">{team.teamName}</td>
-                    <td className="px-6 py-4">{team.eventId}</td>
                     <td className="px-6 py-4">
-                      {team.members.length} members
-                      <div className="text-xs text-gray-400 truncate max-w-[200px]">
+                      <div className="font-medium text-gray-900">{team.teamName}</div>
+                      {team.teamCode && (
+                        <div className="text-xs font-mono text-gray-500 mt-0.5">{team.teamCode}</div>
+                      )}
+                      <div className="text-xs text-gray-400 mt-1 max-w-[200px] truncate">
                         {team.members.map(m => m.name).join(', ')}
                       </div>
                     </td>
+                    <td className="px-6 py-4">{team.eventId}</td>
                     <td className="px-6 py-4">{getStatusBadge(team.status)}</td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {team.createdAt ? new Date(team.createdAt.toMillis()).toLocaleDateString() : '-'}
+                    <td className="px-6 py-4">
+                      {getDeliveryStatus(team)}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      {(team.status === 'verified' || team.status === 'checked_in') && (
+                        <button
+                          onClick={() => handleResend(team.teamId!)}
+                          disabled={resendingId === team.teamId}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <RefreshCw size={12} className={cn(resendingId === team.teamId && "animate-spin")} />
+                          {resendingId === team.teamId ? 'Queuing...' : 'Resend QR'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))

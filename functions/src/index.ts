@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import * as nodemailer from "nodemailer";
 import * as crypto from "crypto";
 import * as qrcode from "qrcode";
+import { getFunctions } from "firebase-admin/functions";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -23,6 +24,22 @@ const transporter = nodemailer.createTransport({
 const generateOtp = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
+
+async function generateTeamCode(eventId: string, eventPrefix: string): Promise<string> {
+  const counterRef = db.collection('counters').doc(eventId);
+  return db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(counterRef);
+    let count = 1;
+    if (doc.exists) {
+      count = (doc.data()?.count || 0) + 1;
+    }
+    transaction.set(counterRef, { count }, { merge: true });
+    
+    const paddedNumber = count.toString().padStart(4, '0');
+    const hash = crypto.createHash('md5').update(`${eventPrefix}${count}`).digest('hex').substring(0, 2).toUpperCase();
+    return `${eventPrefix}-${paddedNumber}-${hash}`;
+  });
+}
 
 /**
  * Triggered when a team is created or updated.
@@ -109,10 +126,19 @@ export const verifyOtp = functions.https.onCall(async (data: any, context: any) 
   const teamData = teamDoc.data();
 
   // Success, mark as verified and generate QR payload
+  const eventId = teamData?.eventId || 'default';
+  const eventPrefix = eventId.substring(0, 3).toUpperCase() || 'HAC';
+  let teamCode = teamData?.teamCode;
+  
+  if (!teamCode) {
+    teamCode = await generateTeamCode(eventId, eventPrefix);
+  }
+
   const secret = process.env.QR_HMAC_SECRET || "default_development_secret_do_not_use_in_prod";
   const exp = Date.now() + 72 * 60 * 60 * 1000; // 72 hours
   const payloadObj = {
     teamId,
+    teamCode,
     eventId: teamData?.eventId,
     exp,
   };
@@ -139,6 +165,7 @@ export const verifyOtp = functions.https.onCall(async (data: any, context: any) 
 
   await db.collection("teams").doc(teamId).update({
     status: "verified",
+    teamCode,
     qrPayload: signedPayload,
     qrSignatureExp: admin.firestore.Timestamp.fromMillis(exp),
     qrCodeUrl,
@@ -148,12 +175,81 @@ export const verifyOtp = functions.https.onCall(async (data: any, context: any) 
   // Delete the used OTP
   await db.collection("otps").doc(teamId).delete();
 
-  return { success: true, message: "Team verified successfully" };
+  return { success: true, message: "Team verified successfully", teamCode };
+});
+
+export const deliverQrTask = functions.tasks.taskQueue({
+  retryConfig: {
+    maxAttempts: 3,
+    minBackoffSeconds: 30,
+  }
+}).onDispatch(async (data: any) => {
+  const { teamId, channel = 'email' } = data;
+  
+  const teamDoc = await db.collection("teams").doc(teamId).get();
+  if (!teamDoc.exists) return;
+  const teamData = teamDoc.data();
+  
+  const attempts = (teamData?.deliveryAttempts || 0) + 1;
+  await db.collection("teams").doc(teamId).update({ deliveryAttempts: attempts });
+
+  try {
+    if (channel === 'email') {
+      const lead = teamData?.members?.find((m: any) => m.role === "lead");
+      if (!lead || !lead.email || !teamData?.qrCodeUrl) {
+        throw new Error("Missing email or QR code URL");
+      }
+      const mailOptions = {
+        from: '"Hackathon Registration" <noreply@hackathon.com>',
+        to: lead.email,
+        subject: "Your Hackathon Check-in QR Code",
+        text: `You are verified! Your team code is ${teamData?.teamCode}. Please find your check-in QR code attached.`,
+        html: `<p>You are verified! Your team code is <strong>${teamData?.teamCode}</strong>. Please find your check-in QR code attached.</p>`,
+        attachments: [
+          {
+            filename: "checkin-qr.png",
+            path: teamData?.qrCodeUrl,
+          },
+        ],
+      };
+      await transporter.sendMail(mailOptions);
+    } else if (channel === 'whatsapp') {
+      const lead = teamData?.members?.find((m: any) => m.role === "lead");
+      if (!lead || !lead.phone) {
+        throw new Error("Missing phone number for WhatsApp delivery");
+      }
+      console.log(`[STUB] Sending WhatsApp message to ${lead.phone} with QR Code URL: ${teamData?.qrCodeUrl}`);
+      // TODO: Insert Twilio API call here
+      // const client = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+      // await client.messages.create({
+      //   body: `Your Hackathon Check-in QR Code is here! Team Code: ${teamData?.teamCode}`,
+      //   from: 'whatsapp:+14155238886',
+      //   to: `whatsapp:${lead.phone}`,
+      //   mediaUrl: [teamData?.qrCodeUrl]
+      // });
+    }
+
+    await db.collection("teams").doc(teamId).update({
+      deliveryStatus: "delivered",
+      deliveredVia: channel,
+      deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+  } catch (error) {
+    if (attempts >= 3) {
+      await db.collection("teams").doc(teamId).update({
+        deliveryStatus: "failed"
+      });
+      console.error(`Delivery failed after 3 attempts for ${teamId}`, error);
+    } else {
+      throw error;
+    }
+  }
 });
 
 /**
  * Triggered when a team is verified.
- * Emails the QR code to the lead.
+ * Enqueues a task to email the QR code to the lead.
  */
 export const onTeamVerified = functions.firestore
   .document("teams/{teamId}")
@@ -165,35 +261,34 @@ export const onTeamVerified = functions.firestore
     if (before && before.status === "verified") return null;
 
     const teamId = context.params.teamId;
-    const lead = after.members?.find((m: any) => m.role === "lead");
 
-    if (!lead || !lead.email || !after.qrCodeUrl) {
-      console.error("Missing lead email or QR code URL for verified team:", teamId);
-      return null;
-    }
+    await db.collection("teams").doc(teamId).update({
+      deliveryStatus: "pending",
+      deliveryAttempts: 0
+    });
 
-    const mailOptions = {
-      from: '"Hackathon Registration" <noreply@hackathon.com>',
-      to: lead.email,
-      subject: "Your Hackathon Check-in QR Code",
-      text: "You are verified! Please find your check-in QR code attached.",
-      html: "<p>You are verified! Please find your check-in QR code attached.</p>",
-      attachments: [
-        {
-          filename: "checkin-qr.png",
-          path: after.qrCodeUrl, // Nodemailer can fetch from URL
-        },
-      ],
-    };
+    const queue = getFunctions().taskQueue("deliverQrTask");
+    await queue.enqueue({ teamId, channel: 'email' });
 
-    try {
-      await transporter.sendMail(mailOptions);
-      console.log(`QR code emailed to ${lead.email} for team ${teamId}`);
-    } catch (error) {
-      console.error("Error sending QR email:", error);
-    }
     return null;
   });
+
+export const resendQr = functions.https.onCall(async (data: any, context: any) => {
+  const { teamId, channel } = data;
+  if (!teamId) {
+    throw new functions.https.HttpsError("invalid-argument", "Missing teamId");
+  }
+
+  await db.collection("teams").doc(teamId).update({
+    deliveryStatus: "pending",
+    deliveryAttempts: 0
+  });
+
+  const queue = getFunctions().taskQueue("deliverQrTask");
+  await queue.enqueue({ teamId, channel: channel || 'email' });
+
+  return { success: true };
+});
 
 // Typed Response for Scanner
 export type QrScanStatus = 

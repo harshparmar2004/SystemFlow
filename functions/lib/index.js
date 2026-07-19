@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.verifyQrScan = exports.onTeamVerified = exports.verifyOtp = exports.onTeamPending = void 0;
+exports.verifyQrScan = exports.resendQr = exports.onTeamVerified = exports.deliverQrTask = exports.verifyOtp = exports.onTeamPending = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const qrcode = require("qrcode");
+const functions_1 = require("firebase-admin/functions");
 admin.initializeApp();
 const db = admin.firestore();
 const storage = admin.storage();
@@ -23,6 +24,21 @@ const transporter = nodemailer.createTransport({
 const generateOtp = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
 };
+async function generateTeamCode(eventId, eventPrefix) {
+    const counterRef = db.collection('counters').doc(eventId);
+    return db.runTransaction(async (transaction) => {
+        var _a;
+        const doc = await transaction.get(counterRef);
+        let count = 1;
+        if (doc.exists) {
+            count = (((_a = doc.data()) === null || _a === void 0 ? void 0 : _a.count) || 0) + 1;
+        }
+        transaction.set(counterRef, { count }, { merge: true });
+        const paddedNumber = count.toString().padStart(4, '0');
+        const hash = crypto.createHash('md5').update(`${eventPrefix}${count}`).digest('hex').substring(0, 2).toUpperCase();
+        return `${eventPrefix}-${paddedNumber}-${hash}`;
+    });
+}
 /**
  * Triggered when a team is created or updated.
  * If status changes to "pending", generate an OTP, save it, and email the lead.
@@ -99,10 +115,17 @@ exports.verifyOtp = functions.https.onCall(async (data, context) => {
     }
     const teamData = teamDoc.data();
     // Success, mark as verified and generate QR payload
+    const eventId = (teamData === null || teamData === void 0 ? void 0 : teamData.eventId) || 'default';
+    const eventPrefix = eventId.substring(0, 3).toUpperCase() || 'HAC';
+    let teamCode = teamData === null || teamData === void 0 ? void 0 : teamData.teamCode;
+    if (!teamCode) {
+        teamCode = await generateTeamCode(eventId, eventPrefix);
+    }
     const secret = process.env.QR_HMAC_SECRET || "default_development_secret_do_not_use_in_prod";
     const exp = Date.now() + 72 * 60 * 60 * 1000; // 72 hours
     const payloadObj = {
         teamId,
+        teamCode,
         eventId: teamData === null || teamData === void 0 ? void 0 : teamData.eventId,
         exp,
     };
@@ -127,6 +150,7 @@ exports.verifyOtp = functions.https.onCall(async (data, context) => {
     }
     await db.collection("teams").doc(teamId).update({
         status: "verified",
+        teamCode,
         qrPayload: signedPayload,
         qrSignatureExp: admin.firestore.Timestamp.fromMillis(exp),
         qrCodeUrl,
@@ -134,16 +158,83 @@ exports.verifyOtp = functions.https.onCall(async (data, context) => {
     });
     // Delete the used OTP
     await db.collection("otps").doc(teamId).delete();
-    return { success: true, message: "Team verified successfully" };
+    return { success: true, message: "Team verified successfully", teamCode };
+});
+exports.deliverQrTask = functions.tasks.taskQueue({
+    retryConfig: {
+        maxAttempts: 3,
+        minBackoffSeconds: 30,
+    }
+}).onDispatch(async (data) => {
+    var _a, _b;
+    const { teamId, channel = 'email' } = data;
+    const teamDoc = await db.collection("teams").doc(teamId).get();
+    if (!teamDoc.exists)
+        return;
+    const teamData = teamDoc.data();
+    const attempts = ((teamData === null || teamData === void 0 ? void 0 : teamData.deliveryAttempts) || 0) + 1;
+    await db.collection("teams").doc(teamId).update({ deliveryAttempts: attempts });
+    try {
+        if (channel === 'email') {
+            const lead = (_a = teamData === null || teamData === void 0 ? void 0 : teamData.members) === null || _a === void 0 ? void 0 : _a.find((m) => m.role === "lead");
+            if (!lead || !lead.email || !(teamData === null || teamData === void 0 ? void 0 : teamData.qrCodeUrl)) {
+                throw new Error("Missing email or QR code URL");
+            }
+            const mailOptions = {
+                from: '"Hackathon Registration" <noreply@hackathon.com>',
+                to: lead.email,
+                subject: "Your Hackathon Check-in QR Code",
+                text: `You are verified! Your team code is ${teamData === null || teamData === void 0 ? void 0 : teamData.teamCode}. Please find your check-in QR code attached.`,
+                html: `<p>You are verified! Your team code is <strong>${teamData === null || teamData === void 0 ? void 0 : teamData.teamCode}</strong>. Please find your check-in QR code attached.</p>`,
+                attachments: [
+                    {
+                        filename: "checkin-qr.png",
+                        path: teamData === null || teamData === void 0 ? void 0 : teamData.qrCodeUrl,
+                    },
+                ],
+            };
+            await transporter.sendMail(mailOptions);
+        }
+        else if (channel === 'whatsapp') {
+            const lead = (_b = teamData === null || teamData === void 0 ? void 0 : teamData.members) === null || _b === void 0 ? void 0 : _b.find((m) => m.role === "lead");
+            if (!lead || !lead.phone) {
+                throw new Error("Missing phone number for WhatsApp delivery");
+            }
+            console.log(`[STUB] Sending WhatsApp message to ${lead.phone} with QR Code URL: ${teamData === null || teamData === void 0 ? void 0 : teamData.qrCodeUrl}`);
+            // TODO: Insert Twilio API call here
+            // const client = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+            // await client.messages.create({
+            //   body: `Your Hackathon Check-in QR Code is here! Team Code: ${teamData?.teamCode}`,
+            //   from: 'whatsapp:+14155238886',
+            //   to: `whatsapp:${lead.phone}`,
+            //   mediaUrl: [teamData?.qrCodeUrl]
+            // });
+        }
+        await db.collection("teams").doc(teamId).update({
+            deliveryStatus: "delivered",
+            deliveredVia: channel,
+            deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+    catch (error) {
+        if (attempts >= 3) {
+            await db.collection("teams").doc(teamId).update({
+                deliveryStatus: "failed"
+            });
+            console.error(`Delivery failed after 3 attempts for ${teamId}`, error);
+        }
+        else {
+            throw error;
+        }
+    }
 });
 /**
  * Triggered when a team is verified.
- * Emails the QR code to the lead.
+ * Enqueues a task to email the QR code to the lead.
  */
 exports.onTeamVerified = functions.firestore
     .document("teams/{teamId}")
     .onWrite(async (change, context) => {
-    var _a;
     const after = change.after.data();
     const before = change.before.data();
     if (!after || after.status !== "verified")
@@ -151,32 +242,26 @@ exports.onTeamVerified = functions.firestore
     if (before && before.status === "verified")
         return null;
     const teamId = context.params.teamId;
-    const lead = (_a = after.members) === null || _a === void 0 ? void 0 : _a.find((m) => m.role === "lead");
-    if (!lead || !lead.email || !after.qrCodeUrl) {
-        console.error("Missing lead email or QR code URL for verified team:", teamId);
-        return null;
-    }
-    const mailOptions = {
-        from: '"Hackathon Registration" <noreply@hackathon.com>',
-        to: lead.email,
-        subject: "Your Hackathon Check-in QR Code",
-        text: "You are verified! Please find your check-in QR code attached.",
-        html: "<p>You are verified! Please find your check-in QR code attached.</p>",
-        attachments: [
-            {
-                filename: "checkin-qr.png",
-                path: after.qrCodeUrl, // Nodemailer can fetch from URL
-            },
-        ],
-    };
-    try {
-        await transporter.sendMail(mailOptions);
-        console.log(`QR code emailed to ${lead.email} for team ${teamId}`);
-    }
-    catch (error) {
-        console.error("Error sending QR email:", error);
-    }
+    await db.collection("teams").doc(teamId).update({
+        deliveryStatus: "pending",
+        deliveryAttempts: 0
+    });
+    const queue = (0, functions_1.getFunctions)().taskQueue("deliverQrTask");
+    await queue.enqueue({ teamId, channel: 'email' });
     return null;
+});
+exports.resendQr = functions.https.onCall(async (data, context) => {
+    const { teamId, channel } = data;
+    if (!teamId) {
+        throw new functions.https.HttpsError("invalid-argument", "Missing teamId");
+    }
+    await db.collection("teams").doc(teamId).update({
+        deliveryStatus: "pending",
+        deliveryAttempts: 0
+    });
+    const queue = (0, functions_1.getFunctions)().taskQueue("deliverQrTask");
+    await queue.enqueue({ teamId, channel: channel || 'email' });
+    return { success: true };
 });
 /**
  * Callable function to verify a QR code scan.
