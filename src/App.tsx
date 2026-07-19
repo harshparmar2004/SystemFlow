@@ -8,10 +8,49 @@ import { Sidebar } from './components/Sidebar';
 import { HackathonForm } from './components/HackathonForm';
 import { Scanner } from './components/Scanner';
 import { AdminDashboard } from './components/Admin/AdminDashboard';
+import { AuthScreen } from './components/AuthScreen';
+import { auth, db } from './lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { UserRole } from './types';
+import { Loader2 } from 'lucide-react';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState(1);
   const [route, setRoute] = useState('home');
+  const [user, setUser] = useState<any>(null);
+  const [userRole, setUserRole] = useState<UserRole | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        try {
+          const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+          if (userDoc.exists()) {
+            setUserRole(userDoc.data() as UserRole);
+          } else {
+            // Default role logic
+            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com';
+            setUserRole({ 
+              uid: currentUser.uid, 
+              email: currentUser.email || '', 
+              role: isHarshAdmin ? 'admin' : 'student' 
+            });
+          }
+        } catch (err) {
+          console.error("Error fetching user role", err);
+        }
+      } else {
+        setUser(null);
+        setUserRole(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const path = window.location.pathname;
@@ -21,6 +60,28 @@ export default function App() {
       setRoute('admin');
     }
   }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-sand-100">
+        <Loader2 className="animate-spin text-burnt-orange" size={32} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  // Enforce role-based routing if they try to access admin directly
+  if (route === 'admin' && userRole?.role !== 'admin' && userRole?.role !== 'volunteer') {
+    // If not admin/volunteer, force them to home
+    setRoute('home');
+  } else if (route === 'home' && userRole?.role === 'admin') {
+    // If admin and on home, maybe route to admin directly, or let them stay on home?
+    // Let's redirect them to admin since they are an admin.
+    setRoute('admin');
+  }
 
   if (route === 'scanner') {
     return <Scanner />;
@@ -40,8 +101,16 @@ export default function App() {
           <h1 className="text-lg font-bold text-gray-900">
             Hackathon<span className="text-burnt-orange">Reg</span>
           </h1>
-          <div className="text-xs font-medium text-gray-500">
-            Step {currentStep} of 4
+          <div className="flex items-center gap-4">
+            <div className="text-xs font-medium text-gray-500">
+              Step {currentStep} of 4
+            </div>
+            <button 
+              onClick={() => auth.signOut()}
+              className="text-xs text-gray-600 hover:text-red-600 underline"
+            >
+              Sign Out
+            </button>
           </div>
         </div>
 

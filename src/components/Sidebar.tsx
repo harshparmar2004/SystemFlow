@@ -1,6 +1,8 @@
 import React from 'react';
 import { cn } from '../lib/utils';
-import { Calendar, Users, FileText, CheckCircle } from 'lucide-react';
+import { Calendar, Users, FileText, CheckCircle, LogOut } from 'lucide-react';
+import { auth } from '../lib/firebase';
+import { signOut } from 'firebase/auth';
 
 interface SidebarProps {
   currentStep: number;
@@ -13,6 +15,10 @@ export function Sidebar({ currentStep }: SidebarProps) {
     { id: 3, name: 'Review', icon: FileText },
     { id: 4, name: 'Submit', icon: CheckCircle },
   ];
+
+  const handleSignOut = () => {
+    signOut(auth);
+  };
 
   return (
     <aside className="w-64 fixed inset-y-0 left-0 bg-sand-200 border-r border-border-muted flex flex-col p-6 hidden md:flex">
@@ -53,7 +59,16 @@ export function Sidebar({ currentStep }: SidebarProps) {
       </nav>
 
       <div className="mt-auto pt-6 border-t border-border-muted">
-        <p className="text-xs text-gray-500">&copy; 2026 Hackathon System</p>
+        <button
+          onClick={handleSignOut}
+          className="w-full flex items-center gap-3 px-3 py-2 mb-4 rounded-md text-gray-600 hover:text-red-600 hover:bg-red-50 transition-colors text-left"
+        >
+          <div className="w-8 h-8 rounded-md flex items-center justify-center border border-transparent">
+            <LogOut size={16} />
+          </div>
+          <span className="text-sm font-medium">Sign Out</span>
+        </button>
+        <p className="text-xs text-gray-500 text-center">&copy; 2026 Hackathon System</p>
       </div>
     </aside>
   );
