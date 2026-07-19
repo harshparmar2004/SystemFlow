@@ -23,6 +23,8 @@ export function AdminDashboard() {
           const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
           if (userDoc.exists()) {
             const roleData = userDoc.data() as UserRole;
+            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com' || currentUser.email === 'harshparmar686630@gmaiil.com';
+            if (isHarshAdmin) roleData.role = 'admin';
             setUserRole(roleData);
             if (roleData.role === 'volunteer') {
               setCurrentTab('checkins');

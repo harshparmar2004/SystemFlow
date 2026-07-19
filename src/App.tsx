@@ -11,7 +11,7 @@ import { AdminDashboard } from './components/Admin/AdminDashboard';
 import { AuthScreen } from './components/AuthScreen';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { UserRole } from './types';
 import { Loader2 } from 'lucide-react';
 
@@ -29,7 +29,18 @@ export default function App() {
         try {
           const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
           if (userDoc.exists()) {
-            setUserRole(userDoc.data() as UserRole);
+            const data = userDoc.data() as UserRole;
+            const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com' || currentUser.email === 'harshparmar686630@gmaiil.com';
+            if (isHarshAdmin) {
+              data.role = 'admin';
+              // Update in db so it persists
+              try {
+                await setDoc(doc(db, 'users', currentUser.uid), { role: 'admin' }, { merge: true });
+              } catch (e) {
+                console.error(e);
+              }
+            }
+            setUserRole(data);
           } else {
             // Default role logic
             const isHarshAdmin = currentUser.email === 'harshparmar686630@gmail.com' || currentUser.email === 'harshparmar686630@gmaiil.com';
@@ -61,6 +72,16 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (userRole) {
+      if (route === 'admin' && userRole.role !== 'admin' && userRole.role !== 'volunteer') {
+        setRoute('home');
+      } else if (route === 'home' && userRole.role === 'admin') {
+        setRoute('admin');
+      }
+    }
+  }, [userRole, route]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-sand-100">
@@ -72,16 +93,6 @@ export default function App() {
   if (!user) {
     return <AuthScreen />;
   }
-
-  useEffect(() => {
-    if (userRole) {
-      if (route === 'admin' && userRole.role !== 'admin' && userRole.role !== 'volunteer') {
-        setRoute('home');
-      } else if (route === 'home' && userRole.role === 'admin') {
-        setRoute('admin');
-      }
-    }
-  }, [userRole, route]);
 
   if (route === 'scanner') {
     return <Scanner />;
